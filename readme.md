@@ -68,16 +68,34 @@ Before taking a snapshot, let's verify that the ETCD pod is healthy and running.
 kubectl get pods -n kube-system -l component=etcd
 ```
 
+**Verify etcd on control-plane node**
+
+```
+sudo ETCDCTL_API=3 etcdctl \
+  --endpoints=https://<PRIVATE_IP>:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/apiserver-etcd-client.crt \
+  --key=/etc/kubernetes/pki/apiserver-etcd-client.key \
+  endpoint health
+```
+
+**Expected:**
+
+```
+https://<PRIVATE_IP>:2379 is healthy
+```
+
 What to look for: Ensure the status says *Running* and the restarts count is stable.
 
 ### Step 4 : Create the Backup Directory & Take the Snapshot
 We will use etcdctl to securely connect to the local ETCD instance using the cluster's internal certificates and save a snapshot to /tmp/etcd-backup.db.
 
 ```
-sudo ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 \
+sudo ETCDCTL_API=3 etcdctl \
+  --endpoints=https://<PRIVATE_IP>:2379 \
   --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/server.crt \
-  --key=/etc/kubernetes/pki/etcd/server.key \
+  --cert=/etc/kubernetes/pki/apiserver-etcd-client.crt \
+  --key=/etc/kubernetes/pki/apiserver-etcd-client.key \
   snapshot save /tmp/etcd-backup.db
 ```
 
@@ -91,6 +109,24 @@ sudo ETCDCTL_API=3 etcdctl --write-out=table snapshot status /tmp/etcd-backup.db
 *What to look for*: 
 
 You should see a table displaying the Revision, Total Keys, and Total Size. If you see this table, your backup is valid and safe.
+
+**Stop static Pods on control plane**
+
+```
+sudo mkdir -p /root/k8s-manifests-backup
+
+sudo mv /etc/kubernetes/manifests/etcd.yaml \
+  /root/k8s-manifests-backup/
+
+sudo mv /etc/kubernetes/manifests/kube-apiserver.yaml \
+  /root/k8s-manifests-backup/
+```
+
+*Kubelet should terminate the corresponding static Pods after their manifests are removed'*
+
+```
+sudo crictl ps
+```
 
 ## Phase 2: The Restore
 
@@ -116,11 +152,53 @@ sudo ETCDCTL_API=3 etcdctl snapshot restore /tmp/etcd-backup.db \
   --data-dir=/var/lib/etcd
 ```
 
+**Start etcd on control plane**
+
+```
+sudo mv /root/k8s-manifests-backup/etcd.yaml \
+  /etc/kubernetes/manifests/
+```
+
 ### Step 8 : Restart Kubelet
 Now that the new data directory is ready, restart the kubelet. It will automatically spin up the ETCD static pod using the restored data.
 
 ```
 sudo systemctl start kubelet
+```
+
+**Wait for etcd containers to start:**
+
+```
+sudo crictl ps | grep etcd
+```
+
+**Verify etcd cluster health**
+
+```
+sudo ETCDCTL_API=3 etcdctl \
+  --endpoints=https://<PRIVATE_IP>:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/apiserver-etcd-client.crt \
+  --key=/etc/kubernetes/pki/apiserver-etcd-client.key \
+  endpoint health
+```
+
+**Also, run this:**
+
+```
+sudo ETCDCTL_API=3 etcdctl \
+  --endpoints=https://<PRIVATE_IP>:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/apiserver-etcd-client.crt \
+  --key=/etc/kubernetes/pki/apiserver-etcd-client.key \
+  endpoint status --write-out=table
+```
+
+**Start kube-apiserver on control-plane**
+
+```
+sudo mv /root/k8s-manifests-backup/kube-apiserver.yaml \
+  /etc/kubernetes/manifests/
 ```
 
 ### Step 9 : Verify Cluster Recovery
